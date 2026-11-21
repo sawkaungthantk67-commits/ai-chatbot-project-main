@@ -2,7 +2,7 @@ const API_BASE_URL =
   window.CHATBOT_API_URL ||
   (["localhost", "127.0.0.1"].includes(window.location.hostname)
     ? "http://localhost:10000"
-    : "https://ai-chatbot-backend-sata.onrender.com");
+    : "https://ai-chatbot-project-main.onrender.com");
 
 const messages = document.getElementById("messages");
 const typing = document.getElementById("typing");
