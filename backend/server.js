@@ -46,6 +46,53 @@ async function createTables() {
       )
     `);
   await seedFAQs();
+  await seedExampleFAQs();
+}
+
+async function seedExampleFAQs() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_migrations (
+      name TEXT PRIMARY KEY
+    )
+  `);
+  await pool.query(`
+    WITH migration AS (
+      INSERT INTO app_migrations (name)
+      VALUES ('example_faqs_v1')
+      ON CONFLICT (name) DO NOTHING
+      RETURNING name
+    )
+    INSERT INTO faq_items (question, answer, keywords, category)
+    SELECT faq.question, faq.answer, faq.keywords, faq.category
+    FROM (VALUES
+      ('How do I choose the right size?',
+       'Example shop: Compare your chest measurements with the size chart before ordering. Contact the shop if you need help choosing a fit.',
+       'size chart,size guide,measurements,measurement,fit', 'product'),
+      ('How can I track my order?',
+       'Example shop: A tracking number is provided after your order is dispatched. Use it on the delivery provider website to check progress.',
+       'track,tracking,where is my order', 'orders'),
+      ('Can I change or cancel my order?',
+       'Example shop: Contact the shop as soon as possible. Changes or cancellations may be possible before production or dispatch.',
+       'cancel,cancellation,change my order,change order', 'orders'),
+      ('How long does order processing take?',
+       'Example shop: In-stock items are usually prepared within 1 to 2 business days. Custom orders may take longer.',
+       'processing,process my order,preparation,dispatch', 'orders'),
+      ('Do you accept bulk orders?',
+       'Example shop: Yes, bulk orders are available. Contact the shop with the quantity, sizes and design for a quote.',
+       'bulk,wholesale,large order,group order', 'orders'),
+      ('How should I wash my T-shirt?',
+       'Example shop: Wash inside out in cold water with similar colors, avoid bleach, and air dry to help protect the print.',
+       'wash,washing,care,laundry,iron', 'product'),
+      ('Can I preview my custom design?',
+       'Example shop: A design preview can be shared for approval before printing. Contact the shop to discuss your design.',
+       'preview,mockup,artwork,logo,design proof', 'customization'),
+      ('What happens if I receive a damaged item?',
+       'Example shop: Contact the shop with your order number and a photo of the damage so the team can discuss a replacement or refund.',
+       'damaged,defect,broken,wrong item', 'returns')
+    ) AS faq(question, answer, keywords, category)
+    WHERE EXISTS (SELECT 1 FROM migration)
+      AND NOT EXISTS (SELECT 1 FROM faq_items existing WHERE existing.question = faq.question)
+  `);
 }
 
 async function seedFAQs() {
