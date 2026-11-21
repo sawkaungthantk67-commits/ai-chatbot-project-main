@@ -2,10 +2,6 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import pkg from "pg";
-import { DatabaseSync } from "node:sqlite";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 dotenv.config();
 
@@ -16,30 +12,19 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json());
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.join(__dirname, "data");
-fs.mkdirSync(dataDir, { recursive: true });
-
-let pool = null;
-let sqlite = null;
-
-if (process.env.DATABASE_URL) {
-  pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_URL.includes("localhost")
-      ? false
-      : { rejectUnauthorized: false }
-  });
-  console.log("Using PostgreSQL");
-} else {
-  sqlite = new DatabaseSync(path.join(dataDir, "chatbot.db"));
-  sqlite.exec("PRAGMA journal_mode = WAL");
-  console.log("DATABASE_URL not set; using local SQLite database");
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL is required for PostgreSQL.");
 }
 
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL.includes("localhost")
+    ? false
+    : { rejectUnauthorized: false }
+});
+
 async function createTables() {
-  if (pool) {
-    await pool.query(`
+  await pool.query(`
       CREATE TABLE IF NOT EXISTS faq_items (
         id SERIAL PRIMARY KEY,
         question TEXT NOT NULL,
@@ -50,7 +35,7 @@ async function createTables() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    await pool.query(`
+  await pool.query(`
       CREATE TABLE IF NOT EXISTS chat_messages (
         id SERIAL PRIMARY KEY,
         session_id VARCHAR(255),
@@ -60,35 +45,11 @@ async function createTables() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-  } else {
-    sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS faq_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        question TEXT NOT NULL,
-        answer TEXT NOT NULL,
-        keywords TEXT NOT NULL,
-        category TEXT,
-        is_active INTEGER DEFAULT 1,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE TABLE IF NOT EXISTS chat_messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT,
-        user_message TEXT NOT NULL,
-        bot_reply TEXT NOT NULL,
-        answer_source TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-  }
-
   await seedFAQs();
 }
 
 async function seedFAQs() {
-  const count = pool
-    ? (await pool.query("SELECT COUNT(*) AS count FROM faq_items")).rows[0].count
-    : sqlite.prepare("SELECT COUNT(*) AS count FROM faq_items").get().count;
+  const count = (await pool.query("SELECT COUNT(*) AS count FROM faq_items")).rows[0].count;
 
   if (Number(count) > 0) return;
 
@@ -101,24 +62,16 @@ async function seedFAQs() {
   ];
 
   for (const faq of faqs) {
-    if (pool) {
-      await pool.query(
-        "INSERT INTO faq_items (question, answer, keywords, category) VALUES ($1, $2, $3, $4)",
-        faq
-      );
-    } else {
-      sqlite.prepare(
-        "INSERT INTO faq_items (question, answer, keywords, category) VALUES (?, ?, ?, ?)"
-      ).run(...faq);
-    }
+    await pool.query(
+      "INSERT INTO faq_items (question, answer, keywords, category) VALUES ($1, $2, $3, $4)",
+      faq
+    );
   }
 }
 
 async function findRelevantFAQs(message) {
   const text = message.toLowerCase();
-  const result = pool
-    ? await pool.query("SELECT question, answer, keywords FROM faq_items WHERE is_active = TRUE")
-    : { rows: sqlite.prepare("SELECT question, answer, keywords FROM faq_items WHERE is_active = 1").all() };
+  const result = await pool.query("SELECT question, answer, keywords FROM faq_items WHERE is_active = TRUE");
 
   return result.rows
     .map((row) => {
@@ -141,14 +94,12 @@ function requireAdmin(req, res, next) {
 }
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, database: pool ? "postgresql" : "sqlite" });
+  res.json({ ok: true, database: "postgresql" });
 });
 
 app.get("/api/faq", async (req, res) => {
   try {
-    const rows = pool
-      ? (await pool.query("SELECT id, question, answer, keywords, category, is_active, created_at FROM faq_items ORDER BY id ASC")).rows
-      : sqlite.prepare("SELECT id, question, answer, keywords, category, is_active, created_at FROM faq_items ORDER BY id ASC").all();
+    const rows = (await pool.query("SELECT id, question, answer, keywords, category, is_active, created_at FROM faq_items ORDER BY id ASC")).rows;
     res.json(rows);
   } catch (error) {
     console.error("FAQ fetch error:", error);
@@ -163,19 +114,11 @@ app.post("/api/faq", requireAdmin, async (req, res) => {
       return res.status(400).json({ error: "question, answer, and keywords are required." });
     }
 
-    if (pool) {
-      const result = await pool.query(
-        "INSERT INTO faq_items (question, answer, keywords, category) VALUES ($1, $2, $3, $4) RETURNING *",
-        [question.trim(), answer.trim(), keywords.trim(), category?.trim() || null]
-      );
-      return res.status(201).json(result.rows[0]);
-    }
-
-    const result = sqlite.prepare(
-      "INSERT INTO faq_items (question, answer, keywords, category) VALUES (?, ?, ?, ?)"
-    ).run(question.trim(), answer.trim(), keywords.trim(), category?.trim() || null);
-    const row = sqlite.prepare("SELECT * FROM faq_items WHERE id = ?").get(Number(result.lastInsertRowid));
-    res.status(201).json(row);
+    const result = await pool.query(
+      "INSERT INTO faq_items (question, answer, keywords, category) VALUES ($1, $2, $3, $4) RETURNING *",
+      [question.trim(), answer.trim(), keywords.trim(), category?.trim() || null]
+    );
+    res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error("FAQ insert error:", error);
     res.status(500).json({ error: "Failed to insert FAQ data." });
@@ -184,9 +127,7 @@ app.post("/api/faq", requireAdmin, async (req, res) => {
 
 app.get("/api/logs", async (req, res) => {
   try {
-    const rows = pool
-      ? (await pool.query("SELECT user_message, bot_reply, answer_source, created_at FROM chat_messages ORDER BY created_at DESC")).rows
-      : sqlite.prepare("SELECT user_message, bot_reply, answer_source, created_at FROM chat_messages ORDER BY created_at DESC").all();
+    const rows = (await pool.query("SELECT user_message, bot_reply, answer_source, created_at FROM chat_messages ORDER BY created_at DESC")).rows;
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.send(rows.map((log, index) =>
       `Log ${index + 1}\nUser Message: ${log.user_message}\nBot Reply: ${log.bot_reply}\nAnswer Source: ${log.answer_source}\nCreated At: ${log.created_at}\n----------------------------------------`
@@ -247,16 +188,10 @@ ${context}`;
       source = "fallback";
     }
 
-    if (pool) {
-      await pool.query(
-        "INSERT INTO chat_messages (session_id, user_message, bot_reply, answer_source) VALUES ($1, $2, $3, $4)",
-        [sessionId || "anonymous", message.trim(), reply, source]
-      );
-    } else {
-      sqlite.prepare(
-        "INSERT INTO chat_messages (session_id, user_message, bot_reply, answer_source) VALUES (?, ?, ?, ?)"
-      ).run(sessionId || "anonymous", message.trim(), reply, source);
-    }
+    await pool.query(
+      "INSERT INTO chat_messages (session_id, user_message, bot_reply, answer_source) VALUES ($1, $2, $3, $4)",
+      [sessionId || "anonymous", message.trim(), reply, source]
+    );
 
     res.json({ reply, source });
   } catch (error) {
